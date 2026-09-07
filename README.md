@@ -67,6 +67,7 @@ flowchart LR
 | [`poc/transform_dump.py`](poc/transform_dump.py) | `promtool tsdb dump` / `thanos-kit dump` text → load-ready NDJSON. Drops Thanos replica labels, clips to time windows, skips staleness markers, never silently loses data |
 | [`poc/load_samples.py`](poc/load_samples.py) | Bulk loader targeting the data stream name. Treats 409 as "already ingested" → crash-safe resume by re-running. Includes a `--synthetic` generator for testing |
 | [`poc/remote_write_probe.py`](poc/remote_write_probe.py) | Sends samples (including historical timestamps) to the native `/_prometheus/api/v1/write` endpoint — hand-encoded remote_write protobuf, stdlib only |
+| [`poc/parity_check.py`](poc/parity_check.py) | The migration sign-off gate: compares PromQL `query_range` (Prometheus **or Thanos Query**) against ES\|QL `TS` bucket-for-bucket for a migrated metric, reports relative-error stats, fails on >5% divergence |
 
 All scripts are Python 3 stdlib only — nothing to install. Authentication
 via the `ES_API_KEY` environment variable.
@@ -117,12 +118,21 @@ curl -s -XPOST localhost:9200/_query?format=txt -H 'Content-Type: application/js
 - ✅ **Native remote_write endpoint accepts 12-month-old samples** once
   Path A is enabled (HTTP 204, past index auto-created); duplicates return
   HTTP 400 partial-failure, so bulk remains the backfill loader of choice
+- ✅ **PromQL parity validated with the real toolchain**: real TSDB blocks
+  (`promtool create-blocks-from`, incl. a counter reset) served by a real
+  Prometheus vs the same blocks migrated to ES — `rate()` agrees to ≤0.25%,
+  `avg_over_time()` to ≤0.11% across every aligned bucket
+- ✅ Shard budget measured (~52 weekly indices/year/stream on Path A) with
+  verified mitigations: force-merge works on auto-created past indices,
+  ILM ages them via `origination_date`
 
 ## Status & open items
 
 - ⚠️ ILM must be applied explicitly to Path B slices (Path A handles it via
   `origination_date` automatically)
-- ⚠️ Definitive `rate()` parity check: compare one real migrated month
-  side-by-side against Thanos Query before bulk-running the rest
-- ⚠️ Path A creates ~52 weekly indices/year (7d max interval) — watch shard
-  budget on high-cardinality streams
+- ⚠️ Final sign-off on the customer's own data: run `poc/parity_check.py`
+  with `--prom` pointed at their Thanos Query for 3–5 dashboard-critical
+  metrics (runbook step 4)
+- ⚠️ Two ES|QL semantics to teach dashboard authors: bare `AVG(gauge)` in
+  `TS` is a `last_over_time`, and `__name__` must stay a dimension label
+  (FINDINGS gotchas #8–9)

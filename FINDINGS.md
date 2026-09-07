@@ -60,6 +60,8 @@ flow is: attach empty slices first, then fire all bulk traffic at the stream.
 | 5 | `counter_double` fields reject plain aggregations (`MAX`, etc.) in ES|QL — on both 9.1 and 9.5 | Expected TSDS semantics — counters are for rate-style queries. On 9.5, `TS <stream> \| STATS SUM(RATE(counter))` works over backfilled data and returns exact rates (verified against known synthetic slopes) |
 | 6 | Duplicate detection is per `_tsid`+timestamp | Two *different* values for the same series+timestamp: first one wins silently (409). Don't load raw and downsampled data covering the same time range for the same series |
 | 7 | Labels not in the static mappings are rejected: `All fields that match routing_path must be configured with [time_series_dimension: true]` | Real Prometheus data has per-metric label sets (`cpu`, `mode`, …). Mappings **must** include a `dynamic_templates` rule mapping `labels.*` → keyword + `time_series_dimension: true` (verified fix on 9.5.3; the official Prometheus integration does this out of the box). The provisioner clones mappings from the write index, so fixing the template propagates automatically |
+| 8 | **Silent data loss if `__name__` is not a dimension label.** Loading real TSDB-block data one-metric-per-doc without `__name__` in `labels` lost ~50% of samples as false "duplicates" — `_tsid` is built from dimensions only, so two metrics sharing a label set (which real exporters do constantly) collide at the same timestamp | `transform_dump.py` now keeps `__name__` under `labels` **by default** (matching the native remote_write schema, which maps `labels` as a dimension passthrough including `__name__`). Only drop it if docs group all metrics of a label set per timestamp. Watch the created/duplicate ratio on first loads — a high duplicate count on a first load means collisions, not idempotency |
+| 9 | In the ES\|QL `TS` command, a bare `AVG(gauge)` per bucket is **not** a window average — it applies an implicit `last_over_time` per series (returned exactly the bucket's last sample, a systematic 3–6% error on a smooth signal) | Use explicit `*_OVER_TIME` functions for PromQL-equivalent semantics: `AVG(AVG_OVER_TIME(field))` ↔ `avg_over_time()`. With that fix, gauge parity vs Prometheus is exact to <0.11% |
 
 ## Verified end state
 
@@ -174,6 +176,48 @@ backfill transform must match it so history and live data share one schema):
 (`time_series_metric` typed); labels keep `__name__`. So for a customer using
 native remote_write for live ingest, run `transform_dump.py --metric-root
 metrics` and keep `__name__` as a label to mirror this schema exactly.
+
+## rate() / query parity: validated end-to-end with the real toolchain
+
+**Verified 2026-09-07.** Full-fidelity parity harness, no synthetic bulk docs:
+real Prometheus TSDB blocks were generated with `promtool tsdb
+create-blocks-from openmetrics` (2 days × 30s samples, sinusoidal counter
+rates **including a counter reset**, sinusoidal gauges), served by a real
+Prometheus, and *the same blocks* migrated through the actual pipeline
+(`promtool tsdb dump` → `transform_dump.py` → `load_samples.py` → ES 9.5.3
+Path A). Then [`poc/parity_check.py`](poc/parity_check.py) compared PromQL
+`query_range` against ES|QL `TS` bucket-for-bucket:
+
+| Comparison (96–1152 aligned buckets) | median err | p95 | max |
+|---|---|---|---|
+| `rate(counter[1h])` vs `SUM(RATE())` @ 1h buckets | 0.15% | 0.25% | 0.25% |
+| `avg_over_time(gauge[1h])` vs `AVG(AVG_OVER_TIME())` | 0.05% | 0.11% | 0.11% |
+| `rate(counter[5m])` @ 5m buckets | 0.16% | 0.24% | 5.3%* |
+
+\* the only >2% buckets are the **final bucket of the data range** on both
+series identically — PromQL extrapolates the rate to the window edge where
+the data ends mid-window; ES does not. A structural edge effect, not a data
+defect. The **counter-reset bucket showed no elevated error** — both engines
+handle resets consistently.
+
+The residual ~0.15% counter difference is PromQL's boundary extrapolation
+(by design). Conclusion: migrated data is query-equivalent for dashboard and
+alerting purposes. `parity_check.py` takes any Prometheus-compatible URL —
+point `--prom` at the customer's **Thanos Query** frontend to run the same
+check on real production data as the sign-off gate (runbook step 4).
+
+## Shard budget for Path A (measured)
+
+Path A at the 7d max interval creates ~52 backing indices per year **per
+data stream** (verified: 56 for a 12-month load). Mitigations, all verified
+working on auto-created past indices: `_forcemerge?max_num_segments=1`
+(2→1 segments), ILM via the automatic `origination_date`, and frozen-tier
+migration. Backfilled weekly indices are search-only after the load, so the
+steady-state cost is segment/heap overhead, not indexing capacity — with
+force-merge + frozen tier, 50–100 historical shards per stream is a
+non-issue on any reasonably sized cluster. It only warrants planning if the
+customer splits metrics across many data streams (shards ≈ 52 × streams ×
+years).
 
 ## Adapting from synthetic to real Thanos data
 

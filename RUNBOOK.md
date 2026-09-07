@@ -168,7 +168,7 @@ attaches them via `_data_stream/_modify`.
 | `--input FILE` / stdin | yes | `promtool tsdb dump` / `thanos-kit dump` output |
 | `--output FILE` / stdout | yes | NDJSON, one ES doc per line |
 | `--metric-root NAME` | no (default `prometheus`) | object the metric field nests under — use `metrics` to match the native remote_write schema |
-| `--keep-name-label` | schema-dependent | also keep `__name__` under `labels` — required to mirror native remote_write documents |
+| `--drop-name-label` | avoid | `__name__` is kept under `labels` by default and **must be a dimension** — without it, different metrics sharing a label set silently collide as false duplicates (FINDINGS gotcha #8) |
 | `--drop-label L` (repeatable) | recommended | strip Thanos external labels (`prometheus_replica`, `replica`, …) that would explode cardinality |
 | `--min-time` / `--max-time` ISO8601 | recommended | clip block samples to the window being migrated (blocks straddle boundaries) |
 
@@ -267,9 +267,28 @@ POST _query { "query": "FROM <stream> | STATS c=COUNT(*) BY month=DATE_TRUNC(1 m
 POST _query { "query": "TS <stream> | WHERE @timestamp >= \"...\" | STATS SUM(RATE(<counter>)) BY labels.instance, TBUCKET(1 hour)" }
 ```
 
-Compare sample counts against the block inventory and run 3–5 dashboard
-PromQL queries against Thanos and Elastic for the same window. Sign off one
-month (ideally the oldest, 1h-resolution month) before bulk-running the rest.
+Compare sample counts against the block inventory, then run the automated
+parity gate — it compares PromQL `query_range` results from Thanos Query
+against ES|QL `TS` bucket-for-bucket and fails on >5% divergence:
+
+```bash
+python3 poc/parity_check.py --prom https://thanos-query.internal:9090 \
+    --es https://CLUSTER:9243 --stream metrics-<dataset>.<namespace> \
+    --metric <a_dashboard_counter> --es-field prometheus.<a_dashboard_counter> \
+    --kind counter --start ... --end ... --bucket 3600
+```
+
+Run it for 3–5 dashboard-critical counters and gauges. Expected: ≤0.25%
+divergence on counters (PromQL boundary extrapolation), ≤0.11% on gauges;
+edge buckets at the very start/end of the migrated range may differ more
+(see FINDINGS). Watch the loader's created/duplicate ratio too — high
+duplicates on a *first* load means `_tsid` collisions, not idempotency
+(gotcha #8). Sign off one month (ideally the oldest, 1h-resolution month)
+before bulk-running the rest.
+
+⚠️ When writing your own ES|QL against migrated gauges: inside `TS`, bare
+`AVG(gauge)` is an implicit `last_over_time`, not a window average — use
+`AVG(AVG_OVER_TIME(field))` for PromQL-equivalent results (gotcha #9).
 
 ### 5. Full run
 

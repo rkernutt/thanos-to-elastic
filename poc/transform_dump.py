@@ -51,9 +51,14 @@ def main():
     ap.add_argument("--metric-root", default="prometheus",
                     help="object the metric field is nested under "
                          "(use 'metrics' to match ES native remote_write schema)")
-    ap.add_argument("--keep-name-label", action="store_true",
-                    help="also keep __name__ under labels (matches ES native "
-                         "remote_write documents)")
+    ap.add_argument("--drop-name-label", action="store_true",
+                    help="DANGEROUS: drop __name__ from labels. Only valid when "
+                         "docs group all metrics of a label set per timestamp — "
+                         "with one-metric-per-doc output (this tool), different "
+                         "metrics sharing a label set would collide on _tsid and "
+                         "be silently dropped as duplicates. Default keeps "
+                         "__name__ as a dimension label, matching ES native "
+                         "remote_write documents.")
     ap.add_argument("--drop-label", action="append", default=[],
                     help="label to remove (repeatable), e.g. prometheus_replica")
     ap.add_argument("--min-time", help="ISO8601 inclusive lower bound")
@@ -104,7 +109,7 @@ def main():
             k, v = lm.group("name"), unescape(lm.group("value"))
             if k == "__name__":
                 name = v
-                if args.keep_name_label:
+                if not args.drop_name_label:
                     labels[k] = v
             elif k not in drop:
                 labels[k] = v
