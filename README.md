@@ -82,11 +82,16 @@ docker run -d --name es-tsds-poc -p 9200:9200 \
 
 # 2. Create a Prometheus-style TSDS template + live stream (see FINDINGS.md)
 
-# 3. Provision 12 months of backfill slices and attach them
+# 3. Path A (9.5+): enable automated past-index creation ...
+curl -X PUT localhost:9200/_cluster/settings -H 'Content-Type: application/json' -d '
+  {"persistent": {"data_stream.past_tsdb_index_creation_enabled": true,
+                  "data_streams.past_tsdb_index_interval": "7d"}}'
+
+#    ... or Path B (<9.5): provision 12 monthly backfill slices instead
 python3 poc/provision_slices.py --stream metrics-promtest.node \
     --start 2025-09 --end 2026-09
 
-# 4. Load a year of synthetic samples through the data stream
+# 4. Load a year of synthetic samples through the data stream (either path)
 python3 poc/load_samples.py --stream metrics-promtest.node --synthetic \
     --series 8 --interval 900 \
     --from 2025-09-01T00:00:00Z --to 2026-09-01T00:00:00Z
