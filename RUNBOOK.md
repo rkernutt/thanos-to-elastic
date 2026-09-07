@@ -26,10 +26,57 @@ Elastic data stream ◄── poc/provision_slices.py   (monthly time_series sli
 ```
 
 Order matters: **live Prometheus remote_write shipping to Elastic must be
-running before the backfill starts.** Historical slices must butt up exactly
-against the live data's start time; a gap can never be filled later
-(Elasticsearch rejects overlapping slices and refuses writes into uncovered
-time ranges).
+running before the backfill starts** so the live stream defines the schema
+the history inherits.
+
+---
+
+## Choosing the backfill path
+
+### Path A — automated (Elasticsearch 9.5+, **recommended**)
+
+ES 9.5 creates past backing indices automatically as old-timestamped
+documents arrive — no slice provisioning, no `_data_stream/_modify`. Enable:
+
+```jsonc
+PUT _cluster/settings
+{
+  "persistent": {
+    "data_stream.past_tsdb_index_creation_enabled": true,
+    "data_streams.past_tsdb_index_interval": "7d"   // default 1d; max 7d
+  }
+}
+```
+
+> ⚠️ The Elastic blog announcing this feature quotes a wrong setting name
+> (`data_streams.time_series.create_past_indices_enabled`) — the names above
+> are verified against the 9.5 source and settings reference.
+
+Then skip step 2 (slice provisioning) entirely: transform and bulk-load
+straight at the data stream. Verified on 9.5.3: 280k docs/year with zero
+provisioning, `failed=0`, identical idempotency (409 = already loaded), and
+auto-created indices get `index.lifecycle.origination_date` so ILM ages them
+correctly without manual intervention. Both settings are **GA on Serverless**.
+
+Trade-offs vs Path B: ~4× more backing indices (7d max interval → ~52/year
+vs 12 monthly — watch shard count on high-cardinality streams) and ~40%
+lower load throughput (on-demand index creation). Gotcha #7 (dynamic label
+dimensions in the template) still applies.
+
+Note: the native `POST /_prometheus/api/v1/write` endpoint also accepts
+historical timestamps once the setting is enabled (verified with
+`poc/remote_write_probe.py`) — but duplicate samples come back as HTTP 400
+"partially failed" rather than per-doc 409s, so **use the bulk path for the
+backfill** and keep remote_write for live ingest.
+
+### Path B — manual slices (Elasticsearch < 9.5)
+
+The pre-provisioned monthly slice recipe using `provision_slices.py`, as
+described in steps 2–3 below and proven in [FINDINGS.md](FINDINGS.md).
+Historical slices must butt up exactly against the live data's start time; a
+gap can never be filled later (Elasticsearch rejects overlapping slices and
+refuses writes into uncovered ranges). ILM must be applied to slices
+explicitly. Not validated on Serverless.
 
 ---
 
@@ -64,10 +111,10 @@ time ranges).
 
 ### Elastic
 
-- **Elastic Cloud Hosted or self-managed, 9.x** (9.5+ recommended: `TS` +
-  `RATE()` in ES|QL verified against backfilled data). **Serverless is not
-  yet validated** for this recipe — it restricts index-level settings; check
-  before committing.
+- **Elasticsearch 9.5+ strongly recommended** (Path A automated backfill,
+  `TS` + `RATE()` in ES|QL, native remote_write/PromQL — all verified).
+  Serverless: Path A is GA; Path B (manual slices, for <9.5) is Cloud
+  Hosted/self-managed only.
 - **Prometheus integration installed and live remote_write flowing** — the
   provisioner clones mappings from the live write index, so the live stream
   defines the schema the history inherits.
@@ -120,7 +167,8 @@ attaches them via `_data_stream/_modify`.
 |-------|----------|---------|
 | `--input FILE` / stdin | yes | `promtool tsdb dump` / `thanos-kit dump` output |
 | `--output FILE` / stdout | yes | NDJSON, one ES doc per line |
-| `--metric-root NAME` | no (default `prometheus`) | object the metric field nests under — match the live integration's schema |
+| `--metric-root NAME` | no (default `prometheus`) | object the metric field nests under — use `metrics` to match the native remote_write schema |
+| `--keep-name-label` | schema-dependent | also keep `__name__` under `labels` — required to mirror native remote_write documents |
 | `--drop-label L` (repeatable) | recommended | strip Thanos external labels (`prometheus_replica`, `replica`, …) that would explode cardinality |
 | `--min-time` / `--max-time` ISO8601 | recommended | clip block samples to the window being migrated (blocks straddle boundaries) |
 
@@ -170,7 +218,7 @@ Stop compactor; stop sidecar uploads/receive once live remote_write to
 Elastic is confirmed flowing. Record `T_live` = timestamp live Elastic
 ingestion started. The bucket is now immutable — snapshot the block list.
 
-### 2. Provision slices
+### 2. Provision slices (Path B only — on 9.5+ enable the Path A cluster settings instead and skip this step)
 
 ```bash
 export ES_API_KEY=...
@@ -260,7 +308,8 @@ On the Elastic side, a bad backfill month is removed surgically:
 
 ## Known limits / open items
 
-- **Serverless**: recipe unvalidated there (index-setting restrictions).
+- **Serverless**: Path A (automated, 9.5+) is GA there; Path B (manual
+  slices) remains unvalidated and is only needed below 9.5.
 - Histograms: classic Prometheus histograms migrate as their component
   `_bucket`/`_sum`/`_count` counter series (this transform handles that
   naturally); native histograms would need mapping work.

@@ -31,11 +31,19 @@ of ranges of currently writable indices [[2026-09-04T07:15:25Z, 2026-09-04T09:45
 
 A time series data stream only accepts writes within ~2.5 hours of *now*
 (configurable to at most 7 days). Twelve months of history can never enter
-through remote_write or a naive bulk load. The recipe: pre-create monthly
-`time_series` indices with explicit `start_time`/`end_time`, attach them to
-the live data stream, then bulk-write **through the data stream name** —
-Elasticsearch routes every document to the right slice by timestamp, and
-duplicate samples come back as 409s, making every run safely re-runnable.
+through a default-configured cluster. Two verified solutions:
+
+- **Path A (Elasticsearch 9.5+, recommended)** — enable
+  `data_stream.past_tsdb_index_creation_enabled` and Elasticsearch
+  auto-creates past backing indices as historical documents arrive (bulk API
+  *and* the native Prometheus remote_write endpoint), with ILM origination
+  dates set automatically. GA on Serverless too.
+- **Path B (< 9.5)** — pre-create monthly `time_series` indices with explicit
+  `start_time`/`end_time`, attach them to the live data stream, then
+  bulk-write through the data stream name.
+
+Either way, duplicate samples come back as 409s (TSDS derives `_id` from
+dimensions + timestamp), making every load safely re-runnable.
 
 ## Pipeline
 
@@ -58,6 +66,7 @@ flowchart LR
 | [`poc/provision_slices.py`](poc/provision_slices.py) | Creates monthly backfill slice indices (mappings cloned from the live write index, bounds clamped against live data) and attaches them to the data stream. Idempotent |
 | [`poc/transform_dump.py`](poc/transform_dump.py) | `promtool tsdb dump` / `thanos-kit dump` text → load-ready NDJSON. Drops Thanos replica labels, clips to time windows, skips staleness markers, never silently loses data |
 | [`poc/load_samples.py`](poc/load_samples.py) | Bulk loader targeting the data stream name. Treats 409 as "already ingested" → crash-safe resume by re-running. Includes a `--synthetic` generator for testing |
+| [`poc/remote_write_probe.py`](poc/remote_write_probe.py) | Sends samples (including historical timestamps) to the native `/_prometheus/api/v1/write` endpoint — hand-encoded remote_write protobuf, stdlib only |
 
 All scripts are Python 3 stdlib only — nothing to install. Authentication
 via the `ES_API_KEY` environment variable.
@@ -97,12 +106,18 @@ curl -s -XPOST localhost:9200/_query?format=txt -H 'Content-Type: application/js
 - ✅ On 9.5.3, `TS … | STATS SUM(RATE(counter))` returns **numerically
   exact** rates from backfilled counter data
 - ✅ Identical behavior on Elasticsearch 9.1.3 and 9.5.3
+- ✅ **9.5 automated backfill (Path A)**: 280k-doc year with zero
+  provisioning, 56 auto-created weekly indices, ILM origination dates set
+  automatically — and the blog's setting name corrected against the source
+- ✅ **Native remote_write endpoint accepts 12-month-old samples** once
+  Path A is enabled (HTTP 204, past index auto-created); duplicates return
+  HTTP 400 partial-failure, so bulk remains the backfill loader of choice
 
 ## Status & open items
 
-- ⚠️ **Serverless unvalidated** — the recipe relies on index-level settings
-  Serverless restricts; confirm the target is Elastic Cloud Hosted or
-  self-managed
-- ⚠️ ILM must be applied to attached slices explicitly (they never roll over)
+- ⚠️ ILM must be applied explicitly to Path B slices (Path A handles it via
+  `origination_date` automatically)
 - ⚠️ Definitive `rate()` parity check: compare one real migrated month
   side-by-side against Thanos Query before bulk-running the rest
+- ⚠️ Path A creates ~52 weekly indices/year (7d max interval) — watch shard
+  budget on high-cardinality streams

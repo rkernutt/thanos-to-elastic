@@ -107,6 +107,74 @@ ES|QL (`TS` + `RATE`) correctly computes rates from *backfilled* counter data
 — early evidence for `rate()` parity, though a real-data comparison against
 Thanos results is still the definitive check.
 
+## Elasticsearch 9.5+: automated backfill supersedes the manual recipe
+
+**Verified 2026-09-07 on 9.5.3 (fresh container).** ES 9.5 ships a GA
+automated-backfill feature ([PR #152716](https://github.com/elastic/elasticsearch/pull/152716))
+that creates past backing indices on demand. Note: the
+[announcement blog](https://www.elastic.co/search-labs/blog/time-series-data-backfill)
+quotes a **wrong setting name** — the real ones (from source + official docs) are:
+
+```jsonc
+PUT _cluster/settings
+{
+  "persistent": {
+    "data_stream.past_tsdb_index_creation_enabled": true,   // default false
+    "data_streams.past_tsdb_index_interval": "7d"           // default 1d, range [1h, 7d]
+  }
+}
+```
+
+With this enabled, **the entire manual slice recipe becomes unnecessary**:
+
+| Verified on 9.5.3 | Result |
+|---|---|
+| Naive 12-month-old write at the data stream | ✅ accepted; past backing index created + attached atomically |
+| 280k-sample year, zero provisioning | ✅ `failed=0` at ~35k docs/s (vs ~60k with pre-provisioned slices — on-demand creation overhead) |
+| Backing indices created (7d interval) | 56 weekly indices (vs 12 monthly manual slices — more shards, plan accordingly) |
+| Full idempotent replay | ✅ `created=0 duplicate=280320 failed=0` — same 409 semantics |
+| Monthly ES\|QL continuity | ✅ identical counts to the manual recipe |
+| ILM | ✅ auto-created indices get `index.lifecycle.origination_date` = their `end_time`, so lifecycle ages history correctly — a manual-recipe caveat solved for free |
+| Gotcha #7 (dynamic label dimensions) | ⚠️ still applies — the index template drives auto-created indices |
+
+Per the official settings reference, both settings are **GA on Serverless**
+— resolving the manual recipe's biggest open item (it relied on index-level
+settings Serverless restricts).
+
+**Decision rule: on 9.5+, use the automated path. Keep the manual slice
+recipe (provision_slices.py) only for clusters that cannot upgrade past 9.4.**
+
+## Prometheus remote_write endpoint accepts historical data too (verified)
+
+ES 9.5's native remote_write endpoint (`POST /_prometheus/api/v1/write`,
+enabled by default via `xpack.prometheus.enabled`) was probed with
+[`poc/remote_write_probe.py`](poc/remote_write_probe.py) (hand-encoded
+protobuf; snappy is optional on this endpoint, so stdlib-only works):
+
+- Current-time sample → HTTP 204; data stream `metrics-generic.prometheus-default` auto-created
+- **12-month-old sample → HTTP 204**; past backing index auto-created with correct 7d bounds
+- Duplicate resend → **HTTP 400** "partially failed … CONFLICT" (no data
+  corruption, count unchanged) — unlike the bulk path, remote_write replays
+  are *reported as errors*, so a remote_write-based backfill replayer must
+  tolerate partial-conflict 400s. **The bulk path remains the better loader.**
+
+Native remote_write document schema (what live data will look like — the
+backfill transform must match it so history and live data share one schema):
+
+```json
+{
+  "@timestamp": 1756987200000,
+  "data_stream": {"type": "metrics", "dataset": "generic.prometheus", "namespace": "default"},
+  "labels": {"__name__": "test_rw_gauge", "instance": "host-9:9100", "job": "rwtest"},
+  "metrics": {"test_rw_gauge": 0.77}
+}
+```
+
+`metrics.*` is a `passthrough` object with metric fields auto-mapped
+(`time_series_metric` typed); labels keep `__name__`. So for a customer using
+native remote_write for live ingest, run `transform_dump.py --metric-root
+metrics` and keep `__name__` as a label to mirror this schema exactly.
+
 ## Adapting from synthetic to real Thanos data
 
 `load_samples.py --input file.ndjson` accepts one ES document per line. The

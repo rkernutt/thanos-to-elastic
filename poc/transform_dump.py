@@ -49,7 +49,11 @@ def main():
     ap.add_argument("--input", help="dump file (default: stdin)")
     ap.add_argument("--output", help="NDJSON file (default: stdout)")
     ap.add_argument("--metric-root", default="prometheus",
-                    help="object the metric field is nested under")
+                    help="object the metric field is nested under "
+                         "(use 'metrics' to match ES native remote_write schema)")
+    ap.add_argument("--keep-name-label", action="store_true",
+                    help="also keep __name__ under labels (matches ES native "
+                         "remote_write documents)")
     ap.add_argument("--drop-label", action="append", default=[],
                     help="label to remove (repeatable), e.g. prometheus_replica")
     ap.add_argument("--min-time", help="ISO8601 inclusive lower bound")
@@ -100,6 +104,8 @@ def main():
             k, v = lm.group("name"), unescape(lm.group("value"))
             if k == "__name__":
                 name = v
+                if args.keep_name_label:
+                    labels[k] = v
             elif k not in drop:
                 labels[k] = v
         if not name:
