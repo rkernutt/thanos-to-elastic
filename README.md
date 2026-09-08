@@ -52,6 +52,11 @@ through a default-configured cluster. Two verified solutions:
 Either way, duplicate samples come back as 409s (TSDS derives `_id` from
 dimensions + timestamp), making every load safely re-runnable.
 
+> Acronym note: **TSDS** (time series data stream) is the Elastic destination;
+> **TSDB** refers to Prometheus's storage engine — the blocks in the Thanos
+> bucket. Elastic's Path A setting names happen to say `tsdb`; they are
+> reproduced verbatim because the API requires the exact name.
+
 ## Pipeline
 
 ```mermaid
