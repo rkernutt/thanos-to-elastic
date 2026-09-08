@@ -3,3 +3,6 @@ __pycache__/
 .DS_Store
 work/
 *.ndjson
+node_modules/
+slides/wire-*.png
+slides/*.pdf
