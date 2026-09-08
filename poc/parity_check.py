@@ -1,8 +1,17 @@
 #!/usr/bin/env python3
 """Compare query results for a migrated metric between a Prometheus-compatible
-endpoint (Prometheus, Thanos Query) and Elasticsearch ES|QL time series functions.
+endpoint (Prometheus, Thanos Query) and Elasticsearch.
 
-For each aligned time bucket it compares, per series:
+Two ES modes:
+  --es-mode promql (default): the IDENTICAL PromQL query text is sent to both
+      engines — the reference endpoint and Elasticsearch's native
+      /_prometheus/api/v1/query_range. Requires the migrated data to live in
+      the native metrics-*.prometheus-* schema (metrics.* + labels.__name__).
+      This is the definitive apples-to-apples sign-off.
+  --es-mode esql: translates to ES|QL TS aggregations (details below); for
+      data migrated into a custom schema.
+
+For each aligned time bucket it compares, per series (esql mode):
   counter: PromQL  rate(metric[<bucket>])   evaluated at bucket END
            ES|QL   TS <stream> | STATS SUM(RATE(field)) BY label, TBUCKET(<bucket>)
   gauge:   PromQL  avg_over_time(metric[<bucket>])
@@ -45,6 +54,12 @@ def iso_to_epoch(s):
     return int(datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp())
 
 
+def es_headers():
+    if os.environ.get("ES_API_KEY"):
+        return {"Authorization": f"ApiKey {os.environ['ES_API_KEY']}"}
+    return {}
+
+
 def http_json(url, body=None, headers=None):
     data = json.dumps(body).encode() if body is not None else None
     h = {"Content-Type": "application/json"} if body is not None else {}
@@ -53,7 +68,7 @@ def http_json(url, body=None, headers=None):
         return json.loads(r.read())
 
 
-def prom_series(args, start, end):
+def prom_series(args, start, end, base_url, headers=None):
     """{(group_label_value, bucket_start_epoch): value} from query_range."""
     w = f"{args.bucket}s"
     q = (f"rate({args.metric}[{w}])" if args.kind == "counter"
@@ -61,7 +76,7 @@ def prom_series(args, start, end):
     # evaluate at bucket ENDs; PromQL window (t-w, t] maps to ES bucket [t-w, t)
     params = urllib.parse.urlencode({
         "query": q, "start": start + args.bucket, "end": end, "step": args.bucket})
-    r = http_json(f"{args.prom.rstrip('/')}/api/v1/query_range?{params}")
+    r = http_json(f"{base_url.rstrip('/')}/api/v1/query_range?{params}", headers=headers)
     out = {}
     for series in r["data"]["result"]:
         key = series["metric"].get(args.by, "?")
@@ -79,10 +94,7 @@ def es_series(args, start, end):
          f'AND labels.__name__ == "{args.metric}" '
          f'| STATS v = {agg} BY g = labels.{args.by}, b = TBUCKET({args.bucket} seconds) '
          f'| SORT g, b | LIMIT 10000')
-    headers = {}
-    if os.environ.get("ES_API_KEY"):
-        headers["Authorization"] = f"ApiKey {os.environ['ES_API_KEY']}"
-    r = http_json(f"{args.es.rstrip('/')}/_query", {"query": q}, headers)
+    r = http_json(f"{args.es.rstrip('/')}/_query", {"query": q}, es_headers())
     cols = [c["name"] for c in r["columns"]]
     vi, gi, bi = cols.index("v"), cols.index("g"), cols.index("b")
     out = {}
@@ -99,10 +111,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--prom", required=True, help="Prometheus/Thanos Query base URL")
     ap.add_argument("--es", required=True)
-    ap.add_argument("--stream", required=True)
+    ap.add_argument("--stream", help="data stream (esql mode only)")
     ap.add_argument("--metric", required=True, help="Prometheus metric name")
-    ap.add_argument("--es-field", required=True, help="ES field, e.g. prometheus.<metric>")
+    ap.add_argument("--es-field", help="ES field, e.g. metrics.<metric> (esql mode only)")
     ap.add_argument("--kind", choices=["counter", "gauge"], required=True)
+    ap.add_argument("--es-mode", choices=["esql", "promql"], default="promql",
+                    help="promql (default): query ES via its native "
+                         "/_prometheus API with the IDENTICAL PromQL text as "
+                         "the --prom side — requires data in the native "
+                         "metrics-*.prometheus-* schema. esql: query via "
+                         "ES|QL TS (requires --es-field)")
     ap.add_argument("--by", default="instance", help="label to group/compare by")
     ap.add_argument("--start", required=True)
     ap.add_argument("--end", required=True)
@@ -111,8 +129,13 @@ def main():
     args = ap.parse_args()
 
     start, end = iso_to_epoch(args.start), iso_to_epoch(args.end)
-    prom = prom_series(args, start, end)
-    es = es_series(args, start, end)
+    prom = prom_series(args, start, end, args.prom)
+    if args.es_mode == "promql":
+        es = prom_series(args, start, end, args.es.rstrip("/") + "/_prometheus", es_headers())
+    else:
+        if not args.es_field:
+            sys.exit("--es-field is required with --es-mode esql")
+        es = es_series(args, start, end)
 
     common = sorted(set(prom) & set(es))
     if not common:

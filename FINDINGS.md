@@ -206,6 +206,56 @@ alerting purposes. `parity_check.py` takes any Prometheus-compatible URL —
 point `--prom` at the customer's **Thanos Query** frontend to run the same
 check on real production data as the sign-off gate (runbook step 4).
 
+### Native PromQL on migrated data (verified 2026-09-08) — migrate into the native schema
+
+ES 9.5 answers **PromQL directly** at `/_prometheus/api/v1/query` and
+`query_range` (plus Kibana PromQL) — so dashboards and Grafana keep their
+queries verbatim; no query migration at all. Verified against year-old
+migrated data, sending the **identical PromQL text** to a real Prometheus and
+to Elasticsearch (`parity_check.py --es-mode promql`, now the default):
+
+| Identical PromQL on both engines | median | p95 | max |
+|---|---|---|---|
+| `avg_over_time(gauge[1h])` | **0.0000%** | **0.0000%** | **0.0000%** (bit-identical) |
+| `rate(counter[1h])` | 0.15% | 0.25% | 0.25% |
+| `rate(counter[5m])` | 0.16% | 0.24% | 5.4% (end-of-data edge bucket only) |
+
+**This changes the target-schema recommendation.** The PromQL engine resolves
+metrics against the native remote_write schema, and ES ships a built-in
+template stack for `metrics-*.prometheus-*` (`metrics-prometheus@template`)
+that provides everything: `metrics.*` passthrough with counters detected by
+naming convention (`*_total`, `*_sum`, `*_count`, `*_bucket` → counter, rest
+gauge), `labels` as a dimension passthrough incl. `__name__` (gotchas #7/#8
+solved out of the box), 10k field limit, failure store. So:
+
+> Migrate into a data stream named `metrics-<dataset>.prometheus-<namespace>`
+> using `transform_dump.py --metric-root metrics --dataset
+> <dataset>.prometheus --namespace <namespace>`. No custom template, and
+> PromQL works on the history immediately.
+
+Caveat found: Prometheus **native histograms** appear in `promtool tsdb dump`
+in a format the transform doesn't parse (it exits nonzero rather than
+dropping them silently). Classic `_bucket`/`_sum`/`_count` histograms migrate
+fine. Audit the customer's exporters for native-histogram usage up front.
+
+### Year-over-year PromQL (`offset`) on migrated data — verified 2026-09-08
+
+The headline customer use case — "compare today against 12 months ago in
+PromQL" — tested with live samples + year-old migrated data in one stream:
+
+| Query | Result |
+|---|---|
+| `parity_temp offset 341d` | ✅ returns the 2025 values |
+| `avg_over_time(parity_temp[1h] offset 341d)` | ✅ **matches real Prometheus exactly** (19.1265 both engines) |
+| `rate(parity_requests_total[1h] offset 341d)` | ✅ works on migrated counters |
+| `parity_temp * 2` (binary op) | ✅ |
+| `parity_temp / (parity_temp offset 341d)` (single-expression ratio) | ❌ `binary expressions with different offsets are not supported at this time` (tech preview) |
+
+Practical guidance: build "vs last year" comparisons as **two queries overlaid
+in one Grafana/Kibana panel** (one with `offset 365d`) — the standard pattern
+for such dashboards anyway. The single-expression ratio is the only gap, and
+the error's "at this time" wording suggests it's on the roadmap.
+
 ## Shard budget for Path A (measured)
 
 Path A at the 7d max interval creates ~52 backing indices per year **per

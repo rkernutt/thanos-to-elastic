@@ -120,8 +120,17 @@ curl -s -XPOST localhost:9200/_query?format=txt -H 'Content-Type: application/js
   HTTP 400 partial-failure, so bulk remains the backfill loader of choice
 - ✅ **PromQL parity validated with the real toolchain**: real TSDB blocks
   (`promtool create-blocks-from`, incl. a counter reset) served by a real
-  Prometheus vs the same blocks migrated to ES — `rate()` agrees to ≤0.25%,
-  `avg_over_time()` to ≤0.11% across every aligned bucket
+  Prometheus vs the same blocks migrated to ES — with the **identical PromQL
+  text on ES's native `/_prometheus` API**, gauges are bit-identical
+  (0.0000%) and `rate()` agrees to ≤0.25%
+- ✅ **Migrate into the native `metrics-*.prometheus-*` schema**: the
+  built-in template auto-types counters by naming convention and dimension-
+  maps labels — no custom template, and dashboards keep PromQL verbatim
+- ✅ **Year-over-year comparisons work**: `offset 341d` queries (values,
+  `avg_over_time`, `rate`) verified against year-old migrated data —
+  matching real Prometheus exactly; only single-expression cross-offset
+  ratios (`x / x offset 1y`) are not yet supported in the tech preview
+  (use two overlaid panel queries instead)
 - ✅ Shard budget measured (~52 weekly indices/year/stream on Path A) with
   verified mitigations: force-merge works on auto-created past indices,
   ILM ages them via `origination_date`
@@ -132,7 +141,10 @@ curl -s -XPOST localhost:9200/_query?format=txt -H 'Content-Type: application/js
   `origination_date` automatically)
 - ⚠️ Final sign-off on the customer's own data: run `poc/parity_check.py`
   with `--prom` pointed at their Thanos Query for 3–5 dashboard-critical
-  metrics (runbook step 4)
-- ⚠️ Two ES|QL semantics to teach dashboard authors: bare `AVG(gauge)` in
-  `TS` is a `last_over_time`, and `__name__` must stay a dimension label
-  (FINDINGS gotchas #8–9)
+  metrics — default mode sends the identical PromQL to both engines
+  (runbook step 4)
+- ⚠️ Audit exporters for Prometheus **native histograms** before migrating —
+  the dump transform rejects them explicitly; classic histograms are fine
+- ⚠️ No query migration needed for dashboards (PromQL runs natively); the
+  ES|QL `TS` semantics in FINDINGS gotcha #9 only apply to newly written
+  native ES|QL

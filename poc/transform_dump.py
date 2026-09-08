@@ -63,6 +63,9 @@ def main():
                     help="label to remove (repeatable), e.g. prometheus_replica")
     ap.add_argument("--min-time", help="ISO8601 inclusive lower bound")
     ap.add_argument("--max-time", help="ISO8601 exclusive upper bound")
+    ap.add_argument("--dataset", help="emit data_stream.dataset (e.g. migrated.prometheus) "
+                                      "to mirror native remote_write docs")
+    ap.add_argument("--namespace", help="emit data_stream.namespace (e.g. default)")
     args = ap.parse_args()
 
     def to_ms(s):
@@ -119,9 +122,11 @@ def main():
 
         iso = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)\
             .strftime("%Y-%m-%dT%H:%M:%S.") + f"{ts % 1000:03d}Z"
-        dst.write(json.dumps(
-            {"@timestamp": iso, "labels": labels, args.metric_root: {name: value}},
-            separators=(",", ":")) + "\n")
+        doc = {"@timestamp": iso, "labels": labels, args.metric_root: {name: value}}
+        if args.dataset:
+            doc["data_stream"] = {"type": "metrics", "dataset": args.dataset,
+                                  "namespace": args.namespace or "default"}
+        dst.write(json.dumps(doc, separators=(",", ":")) + "\n")
         stats["emitted"] += 1
 
     if args.output:

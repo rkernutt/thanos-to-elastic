@@ -241,10 +241,12 @@ aws s3 sync s3://THANOS_BUCKET/$B ./work/$B --only-show-errors
 
 promtool tsdb dump ./work/$B \
   | python3 poc/transform_dump.py \
+      --metric-root metrics \
+      --dataset <dataset>.prometheus --namespace <namespace> \
       --drop-label prometheus_replica --drop-label replica \
       --min-time 2025-10-01T00:00:00Z --max-time 2025-11-01T00:00:00Z \
   | python3 poc/load_samples.py --es https://CLUSTER:9243 \
-      --stream metrics-<dataset>.<namespace> --input /dev/stdin
+      --stream metrics-<dataset>.prometheus-<namespace> --input /dev/stdin
 
 rm -rf ./work/$B    # only after load reports failed=0
 ```
@@ -268,27 +270,30 @@ POST _query { "query": "TS <stream> | WHERE @timestamp >= \"...\" | STATS SUM(RA
 ```
 
 Compare sample counts against the block inventory, then run the automated
-parity gate — it compares PromQL `query_range` results from Thanos Query
-against ES|QL `TS` bucket-for-bucket and fails on >5% divergence:
+parity gate — it sends the **identical PromQL query** to Thanos Query and to
+Elasticsearch's native `/_prometheus` API, compares bucket-for-bucket, and
+fails on >5% divergence:
 
 ```bash
 python3 poc/parity_check.py --prom https://thanos-query.internal:9090 \
-    --es https://CLUSTER:9243 --stream metrics-<dataset>.<namespace> \
-    --metric <a_dashboard_counter> --es-field prometheus.<a_dashboard_counter> \
-    --kind counter --start ... --end ... --bucket 3600
+    --es https://CLUSTER:9243 \
+    --metric <a_dashboard_counter> --kind counter \
+    --start ... --end ... --bucket 3600
 ```
 
-Run it for 3–5 dashboard-critical counters and gauges. Expected: ≤0.25%
-divergence on counters (PromQL boundary extrapolation), ≤0.11% on gauges;
+Run it for 3–5 dashboard-critical counters and gauges. Expected (verified):
+gauges **bit-identical**, counters ≤0.25% (PromQL boundary extrapolation);
 edge buckets at the very start/end of the migrated range may differ more
 (see FINDINGS). Watch the loader's created/duplicate ratio too — high
 duplicates on a *first* load means `_tsid` collisions, not idempotency
 (gotcha #8). Sign off one month (ideally the oldest, 1h-resolution month)
 before bulk-running the rest.
 
-⚠️ When writing your own ES|QL against migrated gauges: inside `TS`, bare
-`AVG(gauge)` is an implicit `last_over_time`, not a window average — use
-`AVG(AVG_OVER_TIME(field))` for PromQL-equivalent results (gotcha #9).
+Dashboards need no query migration: Grafana points at the ES `/_prometheus`
+API and Kibana runs PromQL natively. The ES|QL `TS` semantics (gotcha #9:
+bare `AVG(gauge)` is an implicit `last_over_time`; use
+`AVG(AVG_OVER_TIME(field))`) only matter for engineers writing **new**
+native ES|QL against the metrics.
 
 ### 5. Full run
 
