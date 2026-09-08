@@ -1,11 +1,11 @@
 # Thanos → Elastic: metrics history migration kit
 
-**Migrate 12+ months of Prometheus metrics out of Thanos into Elastic
+**Migrate historical Prometheus metrics out of Thanos into Elastic
 time series data streams — then retire Thanos and its infrastructure.**
 
 Blocks are read **directly from the object-store bucket** — no Thanos
 component sits in the data path (only the compactor must be stopped first).
-Examples use AWS S3, but any Thanos objstore backend works (GCS, Azure Blob,
+Examples use AWS S3, but any Thanos objectstore backend works (GCS, Azure Blob,
 MinIO/S3-compatible, …); only the copy client changes.
 
 Prometheus metrics, logs, and APM traces end up in one platform with one
