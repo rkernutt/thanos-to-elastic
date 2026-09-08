@@ -154,6 +154,9 @@ curl -s -XPOST localhost:9200/_query?format=txt -H 'Content-Type: application/js
   (runbook step 4)
 - ⚠️ Audit exporters for Prometheus **native histograms** before migrating —
   the dump transform rejects them explicitly; classic histograms are fine
-- ⚠️ No query migration needed for dashboards (PromQL runs natively); the
-  ES|QL `TS` semantics in FINDINGS gotcha #9 only apply to newly written
-  native ES|QL
+- ⚠️ No query migration needed for dashboards (PromQL runs natively). One
+  semantic surprise applies only to *newly written* native ES|QL: inside the
+  `TS` command, a bare `AVG(gauge)` is an implicit `last_over_time` (the
+  bucket's last sample), not a window average — use
+  `AVG(AVG_OVER_TIME(field))` for the PromQL-equivalent result. See gotcha
+  #9 in the [FINDINGS.md gotchas table](FINDINGS.md)
