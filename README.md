@@ -81,7 +81,7 @@ flowchart LR
 | [`poc/remote_write_probe.py`](poc/remote_write_probe.py) | Sends samples (including historical timestamps) to the native `/_prometheus/api/v1/write` endpoint — hand-encoded remote_write protobuf, stdlib only |
 | [`poc/parity_check.py`](poc/parity_check.py) | The migration sign-off gate: sends the **identical PromQL query** to Prometheus/Thanos Query and to ES's native `/_prometheus` API (or ES\|QL `TS` for custom schemas), compares bucket-for-bucket, fails on >5% divergence |
 | [`poc/estimate_migration.py`](poc/estimate_migration.py) | Wall-clock + storage predictor: feed it the sample counts from `thanos tools bucket inspect` and it applies benchmark-calibrated stage rates to estimate duration and identify the bottleneck |
-| [`slides/thanos-to-elastic-migration.pptx`](slides/thanos-to-elastic-migration.pptx) | Customer-facing deck: the before/during/after story with the verified proof points ([`build_deck.js`](slides/build_deck.js) regenerates it) |
+| [`slides/thanos-to-elastic-migration.pptx`](slides/thanos-to-elastic-migration.pptx) | Customer-facing deck (6 slides): the before/during/after story, the labels→dimensions transform, and the verified proof points. Maintained directly in PowerPoint; [`build_deck.js`](slides/build_deck.js) generated the original 5-slide baseline |
 
 All scripts are Python 3 stdlib only — nothing to install. Authentication
 via the `ES_API_KEY` environment variable.
