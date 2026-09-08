@@ -38,7 +38,7 @@ A time series data stream only accepts writes within ~2.5 hours of *now*
 (configurable to at most 7 days). Twelve months of history can never enter
 through a default-configured cluster. Two verified solutions:
 
-- **Path A (Elasticsearch 9.5+, recommended)** — set
+- **Path A (Elasticsearch 9.5+, recommended)** — configure cluster setting
   `data_stream.past_tsdb_index_creation_enabled: true` (plus
   `data_streams.past_tsdb_index_interval: 7d` to control slice width) and
   Elasticsearch creates past backing indices automatically as historical
