@@ -25,7 +25,7 @@ Elasticsearch 9.1.3 and 9.5.3.
 | Long-term retention | Thanos compactor + store gateways + S3 | Elastic TSDS on cold/frozen tier |
 | Metrics queries | PromQL via Thanos Query | PromQL in Kibana / ES\|QL `TS` |
 | Logs ↔ metrics ↔ traces correlation | Two systems, manual | One platform |
-| Thanos infrastructure | Queriers, store gateways, compactor, receive | **Retired** (S3 bucket kept as rollback artifact) |
+| Thanos infrastructure | Queriers, store gateways, compactor, receiver | **Retired** (S3 bucket kept as rollback artifact) |
 
 ## The core problem, in one error message
 
