@@ -5,7 +5,7 @@ time series data streams — then retire Thanos and its infrastructure.**
 
 Blocks are read **directly from the object-store bucket** — no Thanos
 component sits in the data path (only the compactor must be stopped first).
-Examples use AWS S3, but any Thanos objectstore backend works (GCS, Azure Blob,
+Examples use AWS S3, but any Thanos object-store backend works (GCS, Azure Blob,
 MinIO/S3-compatible, …); only the copy client changes.
 
 Prometheus metrics, logs, and APM traces end up in one platform with one
@@ -38,11 +38,13 @@ A time series data stream only accepts writes within ~2.5 hours of *now*
 (configurable to at most 7 days). Twelve months of history can never enter
 through a default-configured cluster. Two verified solutions:
 
-- **Path A (Elasticsearch 9.5+, recommended)** — enable
-  `data_stream.past_tsdb_index_creation_enabled` and Elasticsearch
-  auto-creates past backing indices as historical documents arrive (bulk API
-  *and* the native Prometheus remote_write endpoint), with ILM origination
-  dates set automatically. GA on Serverless too.
+- **Path A (Elasticsearch 9.5+, recommended)** — set
+  `data_stream.past_tsdb_index_creation_enabled: true` (plus
+  `data_streams.past_tsdb_index_interval: 7d` to control slice width) and
+  Elasticsearch creates past backing indices automatically as historical
+  documents arrive, via both the bulk API and the native Prometheus
+  remote_write endpoint. ILM origination dates are set automatically, and
+  the feature is GA on Serverless.
 - **Path B (< 9.5)** — pre-create monthly `time_series` indices with explicit
   `start_time`/`end_time`, attach them to the live data stream, then
   bulk-write through the data stream name.
