@@ -69,13 +69,14 @@ flowchart LR
 | Path | What it is |
 |------|-----------|
 | **[RUNBOOK.md](RUNBOOK.md)** | End-to-end procedure: AWS + Elastic prerequisites, IAM policy, script input reference, per-block export loop, validation, ILM, decommission, rollback |
-| **[FINDINGS.md](FINDINGS.md)** | The evidence: every experiment, every error hit during trial-and-error, the 7 gotchas, and the 9.1.3 vs 9.5.3 version matrix |
+| **[FINDINGS.md](FINDINGS.md)** | The evidence: every experiment, every error hit during trial-and-error, the 9 gotchas, the 9.1.3 vs 9.5.3 version matrix, the PromQL parity results, and the throughput benchmark |
 | [`poc/provision_slices.py`](poc/provision_slices.py) | Creates monthly backfill slice indices (mappings cloned from the live write index, bounds clamped against live data) and attaches them to the data stream. Idempotent |
 | [`poc/transform_dump.py`](poc/transform_dump.py) | `promtool tsdb dump` / `thanos-kit dump` text → load-ready NDJSON. Drops Thanos replica labels, clips to time windows, skips staleness markers, never silently loses data |
 | [`poc/load_samples.py`](poc/load_samples.py) | Bulk loader targeting the data stream name. Treats 409 as "already ingested" → crash-safe resume by re-running. Includes a `--synthetic` generator for testing |
 | [`poc/remote_write_probe.py`](poc/remote_write_probe.py) | Sends samples (including historical timestamps) to the native `/_prometheus/api/v1/write` endpoint — hand-encoded remote_write protobuf, stdlib only |
-| [`poc/parity_check.py`](poc/parity_check.py) | The migration sign-off gate: compares PromQL `query_range` (Prometheus **or Thanos Query**) against ES\|QL `TS` bucket-for-bucket for a migrated metric, reports relative-error stats, fails on >5% divergence |
+| [`poc/parity_check.py`](poc/parity_check.py) | The migration sign-off gate: sends the **identical PromQL query** to Prometheus/Thanos Query and to ES's native `/_prometheus` API (or ES\|QL `TS` for custom schemas), compares bucket-for-bucket, fails on >5% divergence |
 | [`poc/estimate_migration.py`](poc/estimate_migration.py) | Wall-clock + storage predictor: feed it the sample counts from `thanos tools bucket inspect` and it applies benchmark-calibrated stage rates to estimate duration and identify the bottleneck |
+| [`slides/thanos-to-elastic-migration.pptx`](slides/thanos-to-elastic-migration.pptx) | Customer-facing deck: the before/during/after story with the verified proof points ([`build_deck.js`](slides/build_deck.js) regenerates it) |
 
 All scripts are Python 3 stdlib only — nothing to install. Authentication
 via the `ES_API_KEY` environment variable.
