@@ -1,7 +1,12 @@
 # Thanos → Elastic: metrics history migration kit
 
-**Migrate 12+ months of Prometheus metrics out of Thanos (S3) into Elastic
+**Migrate 12+ months of Prometheus metrics out of Thanos into Elastic
 time series data streams — then retire Thanos and its infrastructure.**
+
+Blocks are read **directly from the object-store bucket** — no Thanos
+component sits in the data path (only the compactor must be stopped first).
+Examples use AWS S3, but any Thanos objstore backend works (GCS, Azure Blob,
+MinIO/S3-compatible, …); only the copy client changes.
 
 Prometheus metrics, logs, and APM traces end up in one platform with one
 query surface (PromQL included), and the long-term retention that justified
@@ -49,7 +54,7 @@ dimensions + timestamp), making every load safely re-runnable.
 
 ```mermaid
 flowchart LR
-    S3[("Thanos S3 bucket<br/>TSDB blocks<br/>raw / 5m / 1h")] -->|aws s3 sync| W[Migration worker<br/>in-region EC2]
+    S3[("Thanos object store<br/>S3 / GCS / Azure / MinIO<br/>TSDB blocks: raw / 5m / 1h")] -->|aws s3 sync<br/>rclone / azcopy / gcloud| W[Migration worker<br/>in-region, read-only access]
     W -->|promtool tsdb dump<br/>thanos-kit dump| T["transform_dump.py<br/>labels → dimensions<br/>clip window, drop replicas"]
     T -->|NDJSON| L["load_samples.py<br/>bulk via data stream<br/>409 = already loaded"]
     L --> DS[("Elastic TSDS<br/>monthly backfill slices<br/>+ live write index")]

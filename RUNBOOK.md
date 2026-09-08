@@ -8,9 +8,21 @@ runbook are verified against Elasticsearch 9.1.3 and 9.5.3 — see
 
 ## Pipeline overview
 
+**The export reads blocks directly from object storage — no Thanos component
+is in the data path.** Thanos queriers, store gateways, and receivers are
+never queried; the bucket contents are plain Prometheus TSDB blocks (Thanos
+adds only an extended `meta.json` per block), processed locally by standard
+Prometheus tooling. Thanos matters to the migration in exactly one way: its
+**compactor must be stopped first**, so blocks stop being rewritten/deleted
+underneath the export. This also means the pipeline is object-store agnostic
+— anything Thanos supports as an `objstore` backend works (S3, GCS, Azure
+Blob, Swift, Alibaba OSS, Tencent COS, filesystem); only the copy client
+changes. This runbook uses AWS S3 in its examples to match the customer.
+
 ```
-Thanos S3 bucket (TSDB blocks: raw / 5m / 1h resolutions)
-  │  aws s3 sync (per block, in-region EC2 worker)
+Thanos object-store bucket (TSDB blocks: raw / 5m / 1h resolutions)
+  │  aws s3 sync / gcloud storage rsync / azcopy / rclone
+  │  (per block, worker in the same region/DC as the bucket)
   ▼
 Local block dirs ──► promtool tsdb dump / thanos-kit dump   (text samples)
   │
@@ -82,11 +94,28 @@ explicitly. Not validated on Serverless.
 
 ## Prerequisites
 
-### AWS
+### Object storage (AWS S3 for this customer; any Thanos objstore works)
 
-- **Read-only access to the Thanos bucket.** Get the bucket/prefix from the
-  Thanos `objstore.yml` (the config given to store gateway/compactor). Minimum
-  IAM policy for the migration worker:
+The source of truth is the bucket named in the Thanos `objstore.yml` (the
+config given to the store gateway/compactor) — that file also tells you which
+provider you're on. The worker only ever needs **read-only** access. Per
+provider:
+
+| Provider | Copy tool | Read-only access |
+|---|---|---|
+| AWS S3 (this customer) | `aws s3 sync` | IAM policy below |
+| Google Cloud Storage | `gcloud storage rsync` | `roles/storage.objectViewer` |
+| Azure Blob Storage | `azcopy sync` | `Storage Blob Data Reader` |
+| MinIO / Ceph / other S3-compatible | `aws s3 sync --endpoint-url …` or `mc mirror` | S3-style read policy |
+| Anything else / mixed | `rclone sync` (supports every Thanos backend) | provider-equivalent read role |
+
+`thanos tools bucket inspect` (step 0) is already provider-agnostic — it
+reads the same `objstore.yml`. Everything downstream of the local block
+directory (`promtool`/`thanos-kit` → transform → load) is identical
+regardless of provider.
+
+- **Read-only access to the Thanos bucket.** Minimum IAM policy for the
+  migration worker on AWS:
 
   ```json
   {
