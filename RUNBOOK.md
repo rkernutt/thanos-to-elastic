@@ -241,6 +241,37 @@ run is resumed by simply re-running the same command.
    throughput: ~60k docs/s per worker process, so ingest capacity on the
    Elastic side is the real limit — plan hot-tier headroom for the load.
 
+### 0b. Estimate the duration
+
+[`poc/estimate_migration.py`](poc/estimate_migration.py) turns the bucket
+inventory into a wall-clock prediction using rates measured on this kit's
+4.6M-sample benchmark (single worker per stage, laptop-class hardware —
+recalibrate on the customer's actual worker/cluster with one real block):
+
+| Stage | Measured rate | Notes |
+|---|---|---|
+| Object-store download | your bandwidth | ~2–3 B/sample in blocks; overlaps processing, essentially never the bottleneck in-region |
+| `promtool tsdb dump` | ~620k samples/s | per core; needs an empty `wal/` dir next to the blocks |
+| `transform_dump.py` | ~128k samples/s | per Python process — the per-worker bottleneck |
+| `load_samples.py` | ~53k docs/s | per client; cluster aggregate is the real ceiling |
+| ES storage | ~38 B/sample | after force-merge, before cold/frozen tiering |
+
+Workers (each running `dump | transform | load` on independent blocks) scale
+linearly until the cluster's aggregate ingest ceiling. Example — 100k active
+series, 12 months at Thanos-served resolutions (raw 30d @15s, 5m for 60d,
+1h beyond) ≈ 19.7B samples:
+
+```bash
+python3 poc/estimate_migration.py --samples 19.7e9 --workers 8 --es-ceiling 150000
+# -> ~36 h wall clock, ~750 GB pre-tier storage, limited by ES ingest ceiling
+```
+
+The same fleet migrating **raw everywhere** would be 210B samples → ~16 days
+and ~8 TB — the resolution-window decision in step 0 is the single biggest
+lever on both duration and cost. Second biggest: the ES ingest ceiling —
+scale hot-tier capacity (or accept a longer window) before adding workers,
+since sample count, not S3 bandwidth, dominates.
+
 ### 1. Freeze Thanos writes
 
 Stop compactor; stop sidecar uploads/receive once live remote_write to

@@ -269,6 +269,26 @@ non-issue on any reasonably sized cluster. It only warrants planning if the
 customer splits metrics across many data streams (shards ≈ 52 × streams ×
 years).
 
+## Throughput benchmark (2026-09-08, 4.6M samples / 400 series / real blocks)
+
+Measured per-stage rates on a 4.6M-sample dataset built with `promtool tsdb
+create-blocks-from openmetrics`, single worker, laptop-class hardware:
+
+| Stage | Rate | Derived |
+|---|---|---|
+| `promtool tsdb dump` | 4.608M in 7.4s → **~620k samples/s** | needs an empty `wal/` dir next to the blocks or it errors (`read WAL: find last checkpoint`) |
+| `transform_dump.py` | 4.608M in 36.0s → **~128k samples/s** | per-worker bottleneck; parallelize per block |
+| `load_samples.py` → ES 9.5.3 Path A | 4.608M in 86.3s → **~53k docs/s**, `failed=0` | past indices auto-created mid-load without a hiccup |
+| TSDB block size | 13MB / 4.6M → **~2.8 B/sample** | synthetic compresses well; real-world 1.3–3 B/sample |
+| ES store after `_forcemerge` | 168.3MB / 4.6M → **~38 B/sample** | before cold/frozen tiering |
+
+These calibrate [`poc/estimate_migration.py`](poc/estimate_migration.py):
+per-worker pipeline ≈ 50k samples/s, workers scale until the cluster ingest
+ceiling. Rule of thumb: **duration is sample-count-bound, never
+S3-bandwidth-bound** — e.g. 100k series × 12 months at Thanos-served
+resolutions ≈ 20B samples ≈ 1.5 days at a 150k docs/s ceiling, vs 16 days if
+migrated at raw resolution throughout.
+
 ## Adapting from synthetic to real Thanos data
 
 `load_samples.py --input file.ndjson` accepts one ES document per line. The

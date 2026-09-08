@@ -73,6 +73,7 @@ flowchart LR
 | [`poc/load_samples.py`](poc/load_samples.py) | Bulk loader targeting the data stream name. Treats 409 as "already ingested" → crash-safe resume by re-running. Includes a `--synthetic` generator for testing |
 | [`poc/remote_write_probe.py`](poc/remote_write_probe.py) | Sends samples (including historical timestamps) to the native `/_prometheus/api/v1/write` endpoint — hand-encoded remote_write protobuf, stdlib only |
 | [`poc/parity_check.py`](poc/parity_check.py) | The migration sign-off gate: compares PromQL `query_range` (Prometheus **or Thanos Query**) against ES\|QL `TS` bucket-for-bucket for a migrated metric, reports relative-error stats, fails on >5% divergence |
+| [`poc/estimate_migration.py`](poc/estimate_migration.py) | Wall-clock + storage predictor: feed it the sample counts from `thanos tools bucket inspect` and it applies benchmark-calibrated stage rates to estimate duration and identify the bottleneck |
 
 All scripts are Python 3 stdlib only — nothing to install. Authentication
 via the `ES_API_KEY` environment variable.
